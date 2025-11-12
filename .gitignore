@@ -21,3 +21,4 @@ override.tf.json
 
 # Ignore provider binaries and plugin cache
 .terraform/providers/
+#terraform/plugin-cache/
