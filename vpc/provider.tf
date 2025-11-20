@@ -10,3 +10,5 @@ terraform {
     region = "ap-south-1"
   }
 }
+
+#provider configuration for Kubernetes

@@ -51,3 +51,5 @@ variable "cluster_names" {
   type = list(string)
   description = "Cluster names for each VPC (same length as vpc_cidrs)"
 }
+
+## End of variables.tf
