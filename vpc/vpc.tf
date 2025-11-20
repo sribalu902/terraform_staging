@@ -1,105 +1,129 @@
-# Create VPC
-resource "aws_vpc" "nbsl_vpc" {
-  cidr_block           = "10.0.0.0/16"
+resource "aws_vpc" "multi_vpc" {
+  count                = var.create_vpc
+  cidr_block           = var.vpc_cidrs[count.index]
   enable_dns_support   = true
   enable_dns_hostnames = true
 
   tags = {
-    Name = "nbsl-vpc"
+    Name = "nbsl-${var.vpc_names[count.index]}"
   }
 }
 
-# Create Internet Gateway
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.nbsl_vpc.id
 
-  tags = {
-    Name = "nbsl-vpc-igw" 
-  }
-}
+resource "aws_subnet" "public" {
+  count = length(var.public_subnet_cidrs)
 
-# Create public subnets
-resource "aws_subnet" "public_subnets" {
-  count                   = length(var.public_subnet_cidrs)
-  vpc_id                  = aws_vpc.nbsl_vpc.id
+  vpc_id = aws_vpc.multi_vpc[
+    floor(count.index / var.public_subnets_per_vpc)
+  ].id
+
   cidr_block              = var.public_subnet_cidrs[count.index]
-  availability_zone       = var.public_subnet_azs[count.index]
-  map_public_ip_on_launch = false   # ensures EC2 gets public IP
+  map_public_ip_on_launch = true
+  availability_zone = var.public_subnet_azs[count.index]
 
   tags = {
     Name = "public-subnet-${count.index}"
+    Type = "public"
   }
 }
 
-# Create private subnets
-resource "aws_subnet" "private_subnets" {
-  count                   = length(var.private_subnet_cidrs)
-  vpc_id                  = aws_vpc.nbsl_vpc.id
-  cidr_block              = var.private_subnet_cidrs[count.index]
-  availability_zone       = var.private_subnet_azs[count.index ]
-  map_public_ip_on_launch = false 
+
+resource "aws_subnet" "private" {
+  count = length(var.private_subnet_cidrs)
+
+  vpc_id = aws_vpc.multi_vpc[
+    floor(count.index / var.private_subnets_per_vpc)
+  ].id
+
+  cidr_block        = var.private_subnet_cidrs[count.index]
+  availability_zone = var.private_subnet_azs[count.index]
+
+tags = {
+    Name = "private-subnet-${count.index}"
+    Type = "private"
+
+    # Internal load balancers
+    "kubernetes.io/role/internal-elb" = 1
+
+    # Correct cluster tag per VPC
+    "kubernetes.io/cluster/${var.cluster_names[floor(count.index / var.private_subnets_per_vpc)]}" = "shared"
+  }
+}
+
+resource "aws_internet_gateway" "igw" {
+  count  = var.create_vpc
+  vpc_id = aws_vpc.multi_vpc[count.index].id
 
   tags = {
-  Name = "private-subnet-${count.index}"
-  Type = "private"
-  "kubernetes.io/role/internal-elb" = 1
-  "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    Name = "igw-${count.index}"
+  }
 }
 
-}
-# Allocate Elastic IP for NAT Gateway
 resource "aws_eip" "nat_eip" {
+  count  = var.create_vpc
   domain = "vpc"
 }
 
-# Create NAT Gateway in the first public subnet
-resource "aws_nat_gateway" "nat_gw" {
-  allocation_id = aws_eip.nat_eip.id
-  subnet_id     = aws_subnet.public_subnets[0].id   # NAT in first public subnet
+resource "aws_nat_gateway" "nat" {
+  count = var.create_vpc
+
+  allocation_id = aws_eip.nat_eip[count.index].id
+  subnet_id     = aws_subnet.public[count.index * var.public_subnets_per_vpc].id
 
   tags = {
-    Name = "nbsl-vpc-nat"
+    Name = "nat-gw-${count.index}"
   }
 }
-# Create route table for public subnets
+
 resource "aws_route_table" "public_rt" {
-  vpc_id = aws_vpc.nbsl_vpc.id
+  count = var.create_vpc
+
+  vpc_id = aws_vpc.multi_vpc[count.index].id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
+    gateway_id = aws_internet_gateway.igw[count.index].id
   }
 
   tags = {
-    Name = "public-route-table"
+    Name = "public-rt-${count.index}"
   }
 }
-#for each public subnet create association
 
-# Associate all public subnets
+
 resource "aws_route_table_association" "public_assoc" {
-  count          = length(aws_subnet.public_subnets)
-  subnet_id      = aws_subnet.public_subnets[count.index].id
-  route_table_id = aws_route_table.public_rt.id
+  count = length(var.public_subnet_cidrs)
+
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public_rt[
+    floor(count.index / var.public_subnets_per_vpc)
+  ].id
 }
+
 resource "aws_route_table" "private_rt" {
-  vpc_id = aws_vpc.nbsl_vpc.id
+  count = var.create_vpc
+
+  vpc_id = aws_vpc.multi_vpc[count.index].id
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat_gw.id
+    nat_gateway_id = aws_nat_gateway.nat[count.index].id
   }
 
   tags = {
-    Name = "private-route-table"
+    Name = "private-rt-${count.index}"
   }
 }
 
-# Associate all private subnets
 resource "aws_route_table_association" "private_assoc" {
-  count          = length(aws_subnet.private_subnets)
-  subnet_id      = aws_subnet.private_subnets[count.index].id
-  route_table_id = aws_route_table.private_rt.id
+  count = length(var.private_subnet_cidrs)
+
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private_rt[
+    floor(count.index / var.private_subnets_per_vpc)
+  ].id
 }
+
+
 
 
