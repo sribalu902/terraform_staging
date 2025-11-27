@@ -24,9 +24,6 @@ module "vpc" {
 
 
 
-
-
-
 ##########################################
 # VPC PEERING between the two VPCs created above
 ##########################################
@@ -50,19 +47,6 @@ module "peering" {
   peering_name = "cds-bap-peering"
 }
 
-############################################
-# SECURITY GROUP MODULE (create EKS SGs per VPC)
-# it should return eks_nodes_sg_id (or similar)
-############################################
-module "eks_sg" {
-  source = "../../security_group_eks"
-
-  # Send ALL VPCs (module creates one SG per VPC)
-  vpc_ids = module.vpc.vpc_ids
-
-  # Send cluster mapping for each VPC
-  cluster_names = var.cluster_names
-}
 
 
 
@@ -108,41 +92,79 @@ module "ec2" {
 
 
 ############################################
-# EKS module call (deploy into the selected VPC)
+# SECURITY GROUP FOR EKS WORKER NODES (PER VPC)
 ############################################
-module "eks" {
-  source = "../../eks"
+module "security_group_eks" {
+  source     = "../../security_group_eks"
 
-  count = var.create_vpc
-
-  # IMPORTANT: pass kubernetes provider to module
-  # providers = {
-  #   kubernetes = kubernetes.eks[count.index]
-  # }
-
-  cluster_name = var.cluster_names[count.index]
-
-  subnet_ids = module.vpc.private_subnet_ids[count.index]
-
-  worker_sg        = module.eks_sg.worker_sg_ids[count.index]
-  control_plane_sg = module.eks_sg.control_plane_sg_ids[count.index]
-
-  node_ami           = var.node_ami
-  node_instance_type = var.node_instance_type
-  key_name           = var.key_name
-
-  desired_capacity = var.desired_capacity
-  min_size         = var.min_size
-  max_size         = var.max_size
-
-  admin_role_arn = var.admin_role_arn
+  create_vpc = var.create_vpc
+  vpc_ids    = module.vpc.vpc_ids
+  tags       = var.tags
 }
 
 
+############################################
+# EKS MODULE – ONE CLUSTER PER VPC
+############################################
+resource "aws_iam_service_linked_role" "eks_nodegroup" {
+  aws_service_name = "eks-nodegroup.amazonaws.com"
+}
 
 
+module "eks" {
+  source = "../../eks"
+  count  = var.create_vpc
 
-  # NEW ENTRY
+  ############################################
+  # CLUSTER NAME PER VPC
+  ############################################
+  cluster_name = "${var.cluster_name_prefix}-${var.vpc_names[count.index]}"
+
+  ############################################
+  # VPC + SUBNETS (PRIVATE SUBNETS FOR NODES)
+  ############################################
+  vpc_id = module.vpc.vpc_ids[count.index]
+
+ subnet_ids = module.vpc.private_subnet_ids[count.index]
+
+  ############################################
+  # WORKER SECURITY GROUP FROM SECURITY_GROUP_EKS MODULE
+  ############################################
+  worker_sg_id = module.security_group_eks.eks_worker_sg_ids[count.index]
+  ############################################
+  #  SSH KEY FOR WORKER NODES
+  ############################################
+  node_ssh_key_name = var.node_ssh_key_name
+  ############################################
+  # NODE GROUPS (DYNAMIC)
+  ############################################
+  node_groups     = var.node_groups
+  node_group_tags = { Environment = var.environment }
+
+  ############################################
+  # CLUSTER VERSION + TAGS
+  ############################################
+  eks_version = var.eks_version
+  tags        = var.tags
+}
+##########################################
+# Bastion Module
+##########################################
+
+  module "bastion" {
+  source = "../../bastion"
+
+  vpc_ids           = module.vpc.vpc_ids
+  public_subnet_ids = module.vpc.public_subnet_ids
+
+  ami_id   = var.bastion_ami_id
+  key_name = var.bastion_key_name
+  ssh_cidr = var.ssh_cidr
+
+ 
+}
+
+
  
 
 

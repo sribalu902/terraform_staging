@@ -1,151 +1,153 @@
-############################################
-# DYNAMIC VPC
-############################################
-data "aws_vpc" "selected" {
-  filter {
-    name   = "tag:Name"
-    values = ["nbsl-vpc"]
-  }
-}
+#######################################################
+# EKS cluster (production-friendly) + managed nodegroups
+# - Targeting EKS 1.29 (compatible with provider v6.x)
+# - Uses managed node groups (dynamic)
+# - Creates required service-linked role for nodegroups (permanent fix)
+# - Conditional remote_access (only if key provided)
+# - Clear inline comments explaining what/why for production
+#######################################################
 
-############################################
-# DYNAMIC SUBNETS
-############################################
-data "aws_subnets" "private" {
-  filter {
-    name   = "tag:Type"
-    values = ["private"]
-  }
-}
-
-############################################
-# SECURITY GROUP FOR NODES (dynamic)
-############################################
-data "aws_security_group" "workers" {
-  filter {
-    name   = "group-name"
-    values = ["ec2-public-sg"]
-  }
-}
-
-############################################
-# EKS CONTROL PLANE IAM ROLE
-############################################
+############################
+# 2) Cluster IAM role (control-plane)
+############################
 resource "aws_iam_role" "eks_cluster_role" {
-  name = "nbsl-eks-cluster-cluster-role"
-
+  name = "${var.cluster_name}-cluster-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Effect    = "Allow",
+      Effect = "Allow",
       Principal = { Service = "eks.amazonaws.com" },
-      Action    = "sts:AssumeRole"
+      Action = "sts:AssumeRole"
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  role       = aws_iam_role.eks_cluster_role.name
+# Attach managed policies required by EKS control plane
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSServicePolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+  role       = aws_iam_role.eks_cluster_role.name
 }
 
-############################################
-# EKS CLUSTER
-############################################
-resource "aws_eks_cluster" "eks" {
-  name     = "nbsl-eks-cluster"
+############################
+# 3) EKS Cluster
+# For EKS 1.29+ we don't need to add Auto Mode disabling flags
+# Keep cluster config minimal and production-friendly (private endpoint by default)
+############################
+resource "aws_eks_cluster" "cluster" {
+  name     = var.cluster_name
+  version  = var.eks_version
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
-    # subnet_ids = concat(
-    #   data.aws_subnets.private.ids,
-    #   data.aws_subnets.public.ids
-    # )
-    subnet_ids = data.aws_subnets.private.ids
-    endpoint_public_access = false
+    # Node traffic stays in private subnets (recommended for prod)
+    subnet_ids              = var.subnet_ids
     endpoint_private_access = true
+    endpoint_public_access  = false
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_cluster_policy
-  ]
+  # Ensure the cluster has a friendly set of tags
+  tags = merge(var.tags, { Name = var.cluster_name })
 }
 
-
-############################################
-# NODE IAM ROLE
-############################################
-resource "aws_iam_role" "node_role" {
-  name = "nbsl-eks-cluster-node-role"
-
+############################
+# 4) Node IAM role and policies (for managed node groups)
+############################
+resource "aws_iam_role" "eks_node_role" {
+  name = "${var.cluster_name}-node-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Effect    = "Allow",
+      Effect = "Allow",
       Principal = { Service = "ec2.amazonaws.com" },
-      Action    = "sts:AssumeRole"
+      Action = "sts:AssumeRole"
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "worker_node_policy" {
-  role       = aws_iam_role.node_role.name
+resource "aws_iam_role_policy_attachment" "node_AmazonEKSWorkerNodePolicy" {
+  role       = aws_iam_role.eks_node_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-}
 
-resource "aws_iam_role_policy_attachment" "cni_policy" {
-  role       = aws_iam_role.node_role.name
+  depends_on = [aws_iam_role.eks_node_role]
+}
+resource "aws_iam_role_policy_attachment" "node_AmazonEKSCNIPolicy" {
+  role       = aws_iam_role.eks_node_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
-
-resource "aws_iam_instance_profile" "worker_profile" {
-  name = "nbsl-eks-cluster-worker-profile"
-  role = aws_iam_role.node_role.name
+resource "aws_iam_role_policy_attachment" "node_ECR_ReadOnly" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+resource "aws_iam_role_policy_attachment" "node_SSM" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-############################################
-# LAUNCH TEMPLATE
-############################################
-resource "aws_launch_template" "worker_lt" {
-  name_prefix   = "nbsl-eks-cluster-lt-"
-  image_id      = var.node_ami_id
-  instance_type = var.node_instance_type
-  key_name      = var.ssh_key_name
-
-  iam_instance_profile {
-    name = aws_iam_instance_profile.worker_profile.name
-  }
-
-  network_interfaces {
-    security_groups = [data.aws_security_group.workers.id]
-  }
-
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    /etc/eks/bootstrap.sh nbsl-eks-cluster
-  EOF
-  )
+############################
+# 5) Dynamic managed node groups
+# - Create one aws_eks_node_group per object in var.node_groups
+# - remote_access is created only when var.node_ssh_key_name is not null/empty
+############################
+locals {
+  node_group_map = { for ng in var.node_groups : ng.name => ng }
 }
 
-############################################
-# AUTO SCALING GROUP
-############################################
-resource "aws_autoscaling_group" "worker_asg" {
-  name                = "nbsl-eks-cluster-asg"
-  desired_capacity    = var.desired_capacity
-  min_size            = var.min_size
-  max_size            = var.max_size
+resource "aws_eks_node_group" "node_groups" {
+  for_each = local.node_group_map
 
-  vpc_zone_identifier = data.aws_subnets.private.ids
+  cluster_name    = aws_eks_cluster.cluster.name
+  node_group_name = each.key
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  depends_on = [
+  aws_eks_cluster.cluster,
+  aws_iam_role.eks_node_role,
 
-  launch_template {
-    id      = aws_launch_template.worker_lt.id
-    version = "$Latest"
+  aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
+  aws_iam_role_policy_attachment.node_AmazonEKSCNIPolicy,
+  aws_iam_role_policy_attachment.node_ECR_ReadOnly,
+  aws_iam_role_policy_attachment.node_SSM
+]
+
+
+
+  # place nodes into the private subnets provided by the VPC module
+  subnet_ids     = var.subnet_ids
+  instance_types = each.value.instance_types
+  disk_size      = each.value.disk_size
+  capacity_type  = lookup(each.value, "capacity_type", "ON_DEMAND")
+
+  scaling_config {
+    desired_size = each.value.desired_size
+    min_size     = each.value.min_size
+    max_size     = each.value.max_size
   }
 
-  tag {
-    key                 = "kubernetes.io/cluster/nbsl-eks-cluster"
-    value               = "owned"
-    propagate_at_launch = true
+  labels = lookup(each.value, "labels", {})
+
+  update_config {
+    # how many nodes can be unavailable during upgrades (1 is safe default)
+    max_unavailable = lookup(each.value, "max_unavailable", 1)
   }
+
+  # Remote access: create this block ONLY if a key name is provided in tfvars
+  dynamic "remote_access" {
+    for_each = var.node_ssh_key_name != null && var.node_ssh_key_name != "" ? [1] : []
+    content {
+      ec2_ssh_key               = var.node_ssh_key_name
+      source_security_group_ids = [var.worker_sg_id]
+    }
+  }
+
+  tags = merge(var.node_group_tags, {
+    Name               = "${var.cluster_name}-${each.key}"
+    "eks:cluster-name" = var.cluster_name
+  })
+
 }
+############################
+# 6) Expose useful outputs (keep outputs in a separate outputs.tf if you prefer)
+###########################

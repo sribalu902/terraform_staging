@@ -10,7 +10,7 @@
 crash.log
 
 # Sensitive variable files
-terraform.tfvars
+
 *.tfvars.json
 
 # Override files (local use only)

@@ -1,0 +1,10 @@
+public_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.3.0/24", "10.0.4.0/24","10.0.5.0/24", "10.0.6.0/24"]
+public_subnet_azs  = ["ap-south-1a", "ap-south-1b"]
+private_subnet_azs = ["ap-south-1a", "ap-south-1b","ap-south-1a", "ap-south-1b"]
+cluster_name = "nbsl-eks-cluster"
+public_sg = "nbsl-public-sg"
+instance_types =["t3.micro", "t3.micro", "t3.micro"]
+ami_ids = ["ami-02b8269d5e85954ef", "ami-02b8269d5e85954ef", "ami-02b8269d5e85954ef"]
+key_name = "balu"
+ec2_instance_names= ["dev-ec2-1", "dev-ec2-2", "dev-ec2-3"]

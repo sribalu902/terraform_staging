@@ -1,35 +1,56 @@
-###########################################
-# EKS MAIN CONFIG VARIABLES
-###########################################
+variable "cluster_name" {
+  type = string
+}
 
+variable "vpc_id" {
+  type = string
+}
 
-variable "node_instance_type" {
-  description = "EC2 instance type for worker nodes (self-managed)"
+variable "subnet_ids" {
+  type        = list(string)
+  description = "Private subnets for EKS worker nodes"
+}
+
+variable "worker_sg_id" {
   type        = string
+  description = "Security group for worker nodes created by security_group_eks module"
 }
 
-
-variable "node_ami_id" {
-  description = "Amazon EKS-Optimized AMI ID"
-  type        = string
+variable "eks_version" {
+  type    = string
+  default = "1.27"
 }
 
-variable "desired_capacity" {
-  description = "ASG desired number of worker nodes"
-  type        = number
+variable "node_ssh_key_name" {
+  type    = string
+  default = ""
 }
 
-variable "min_size" {
-  description = "ASG minimum worker nodes"
-  type        = number
+variable "node_groups" {
+  type = list(object({
+    name           = string
+    instance_types = list(string)
+    desired_size   = number
+    min_size       = number
+    max_size       = number
+    disk_size      = number
+    labels         = optional(map(string), {})
+    taints         = optional(list(object({
+                      key    = string
+                      value  = string
+                      effect = string
+                    })), [])
+    capacity_type  = optional(string, "ON_DEMAND")
+    max_unavailable = optional(number, 1)
+  }))
 }
 
-variable "max_size" {
-  description = "ASG maximum worker nodes"
-  type        = number
+variable "tags" {
+  type    = map(string)
+  default = {}
 }
 
-variable "ssh_key_name" {
-  description = "SSH key name for worker nodes"
-  type        = string
+variable "node_group_tags" {
+  type    = map(string)
+  default = {}
 }

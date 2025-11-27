@@ -1,91 +1,61 @@
-############################################
-# aws-auth for cluster 0 (cds)
-############################################
-# resource "kubernetes_config_map" "aws_auth_cds" {
-#   provider = kubernetes.cds
+##############################################
+# AWS AUTH CONFIGMAP APPLY (FINAL CLEAN VERSION)
+##############################################
 
-#   metadata {
-#     name      = "aws-auth"
-#     namespace = "kube-system"
-#   }
+resource "null_resource" "aws_auth" {
+  count = length(module.eks)
 
-#   data = {
-#     mapRoles = yamlencode([
-#       {
-#         rolearn  = module.eks[0].node_role_arn
-#         username = "system:node:{{EC2PrivateDNSName}}"
-#         groups   = ["system:bootstrappers", "system:nodes"]
-#       }
-#     ])
-#     mapUsers = yamlencode([
-#       {
-#         userarn  = var.admin_user_arn
-#         username = "admin"
-#         groups   = ["system:masters"]
-#       }
-#     ])
-#   }
-# }
+  provisioner "local-exec" {
+    command = <<EOT
+set -e
 
-# ############################################
-# # aws-auth for cluster 1 (bap)
-# ############################################
-# resource "kubernetes_config_map" "aws_auth_bap" {
-#   provider = kubernetes.bap
+# Set variables
+CLUSTER_NAME="${module.eks[count.index].cluster_name}"
+NODE_ROLE_ARN="${module.eks[count.index].node_role_arn}"
+REGION="ap-south-1"
 
-#   metadata {
-#     name      = "aws-auth"
-#     namespace = "kube-system"
-#   }
+echo "Updating kubeconfig for $CLUSTER_NAME..."
 
-#   data = {
-#     mapRoles = yamlencode([
-#       {
-#         rolearn  = module.eks[1].node_role_arn
-#         username = "system:node:{{EC2PrivateDNSName}}"
-#         groups   = ["system:bootstrappers", "system:nodes"]
-#       }
-#     ])
-#     mapUsers = yamlencode([
-#       {
-#         userarn  = var.admin_user_arn
-#         username = "admin"
-#         groups   = ["system:masters"]
-#       }
-#     ])
-#   }
-# }
-############################################
-# DYNAMIC AWS-AUTH (NO hard-coded clusters)
-############################################
-resource "kubernetes_config_map" "aws_auth" {
-  for_each = module.eks
+aws eks update-kubeconfig \
+  --name "$CLUSTER_NAME" \
+  --region "$REGION"
 
-  provider = kubernetes[each.key]
+# Create aws-auth yaml
+cat > aws-auth-${count.index}.yaml <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: $NODE_ROLE_ARN
+      username: system:node:{{EC2PrivateDNSName}}
+      groups:
+        - system:bootstrappers
+        - system:nodes
+EOF
 
-  metadata {
-    name      = "aws-auth"
-    namespace = "kube-system"
+# Add admin users (if any)
+%{ if length(var.admin_user_arns) > 0 }
+echo "  mapUsers: |" >> aws-auth-${count.index}.yaml
+%{ for u in var.admin_user_arns ~}
+echo "    - userarn: ${u}" >> aws-auth-${count.index}.yaml
+echo "      username: admin" >> aws-auth-${count.index}.yaml
+echo "      groups: [\\"system:masters\\"]" >> aws-auth-${count.index}.yaml
+%{ endfor ~}
+%{ endif }
+
+echo "Applying aws-auth for $CLUSTER_NAME ..."
+kubectl apply -f aws-auth-${count.index}.yaml
+
+EOT
+    interpreter = ["/bin/bash", "-c"]
   }
 
-  data = {
-    mapRoles = yamlencode([
-      {
-        rolearn  = each.value.node_role_arn
-        username = "system:node:{{EC2PrivateDNSName}}"
-        groups   = [
-          "system:bootstrappers",
-          "system:nodes"
-        ]
-      }
-    ])
-
-    mapUsers = yamlencode([
-      {
-        userarn  = var.admin_user_arn
-        username = "admin"
-        groups   = ["system:masters"]
-      }
-    ])
+  triggers = {
+    cluster_name  = module.eks[count.index].cluster_name
+    node_role_arn = module.eks[count.index].node_role_arn
+    admins        = join(",", var.admin_user_arns)
   }
 }
