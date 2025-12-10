@@ -1,17 +1,30 @@
-cluster_name = "cds"
+eks_version = "1.29"
 
-subnet_ids = [
-  "subnet-0abc123",
-  "subnet-0def456"
+node_ssh_key_name = "bala-eks-key"
+
+node_groups = [
+  {
+    name           = "system-ng"
+    instance_types = ["t3.small"]
+    disk_size      = 20
+    desired_size   = 1
+    min_size       = 1
+    max_size       = 2
+  },
+  {
+    name           = "app-ng"
+    instance_types = ["t3.medium"]
+    disk_size      = 30
+    desired_size   = 1
+    min_size       = 1
+    max_size       = 3
+  }
 ]
 
-# worker_sg        = "sg-01aaaaaa"
-# control_plane_sg = "sg-02bbbbbb"
+tags = {
+  Environment = "stage"
+  Project     = "nbsl"
+}
 
-# node_ami           = ""
-# node_instance_type  = "t3.medium"
-# key_name            = "balu"
 
-# desired_capacity = 2
-# min_size         = 1
-# max_size         = 3
+

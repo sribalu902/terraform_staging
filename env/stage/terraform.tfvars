@@ -3,36 +3,36 @@
 ############################################
 
 # Number of VPCs to create
-create_vpc = 2
+create_vpc = 1
 
 # Friendly names for each VPC (index-based)
 vpc_names = [
   "cds",
-  "bap"
+  # "bap"
 ]
 
 # EKS cluster names (one per VPC)
 cluster_names = [
   "cds",
-  "bap"
+  # "bap"
 ]
 
 # CIDRs per VPC (match count)
 vpc_cidrs = [
   "10.0.0.0/16",
-  "10.1.0.0/16"
+  # "10.1.0.0/16"
 ]
 
 # Public Subnets (2 per VPC)
 public_subnet_cidrs = [
   "10.0.1.0/24", "10.0.2.0/24",
-  "10.1.1.0/24", "10.1.2.0/24"
+  # "10.1.1.0/24", "10.1.2.0/24"
 ]
 
 # Private Subnets (2 per VPC)
 private_subnet_cidrs = [
   "10.0.11.0/24", "10.0.12.0/24",
-  "10.1.11.0/24", "10.1.12.0/24"
+  # "10.1.11.0/24", "10.1.12.0/24"
 ]
 
 # Number of public / private subnets per VPC
@@ -42,13 +42,13 @@ private_subnets_per_vpc = 2
 # Availability Zones for public subnets
 public_subnet_azs = [
   "ap-south-1a", "ap-south-1b",
-  "ap-south-1a", "ap-south-1b"
+  # "ap-south-1a", "ap-south-1b"
 ]
 
 # AZs for private subnets
 private_subnet_azs = [
   "ap-south-1a", "ap-south-1b",
-  "ap-south-1a", "ap-south-1b"
+  # "ap-south-1a", "ap-south-1b"
 ]
 
 
@@ -70,19 +70,21 @@ node_ssh_key_name = "stage"
 node_groups = [
   {
     name           = "system-ng"
-    instance_types = ["t3.medium"]
+    instance_types = ["t2.small"]
     desired_size   = 2
     min_size       = 1
     max_size       = 3
     disk_size      = 20
+    ami_type       = "AL2023_x86_64_STANDARD"
   },
   {
     name           = "app-ng"
-    instance_types = ["t3.large"]
+    instance_types = ["t2.small"]
     desired_size   = 2
     min_size       = 2
     max_size       = 6
-    disk_size      = 40
+    disk_size      = 25
+    ami_type       = "AL2023_x86_64_STANDARD"
   }
   # {
   #   name           = "spot-ng"
@@ -103,9 +105,10 @@ node_groups = [
 # ADMIN USERS FOR KUBECTL ACCESS
 ############################################
 admin_user_arns = [
-  "arn:aws:iam::268428819515:user/bala-admin"
+  
+  "arn:aws:iam::268428819515:user/terraform"
 ]
-
+admin_role_arn = "arn:aws:iam::268428819515:role/eks-admin-role"
 
 ############################################
 # COMMON TAGS
@@ -125,7 +128,7 @@ environment = "stage"
 # BASTION HOST CONFIGURATION
 ############################################
 
-ssh_cidr        = "122.177.244.209/32"      # your laptop IP
+ssh_cidr        = "192.168.68.101/32"      # your laptop IP
 bastion_ami_id  = "ami-02b8269d5e85954ef"   # Amazon Linux 2
 bastion_key_name = "stage"
 
@@ -136,12 +139,12 @@ bastion_key_name = "stage"
 
 ami_ids = [
   "ami-02b8269d5e85954ef",    # for EC2 in VPC[0]
-  "ami-02b8269d5e85954ef"     # for EC2 in VPC[1]
+  # "ami-02b8269d5e85954ef"     # for EC2 in VPC[1]
 ]
 
 instance_types = [
   "t3.small",
-  "t3.small"
+  # "t3.small"
 ]
 
 key_name_ec2 = "stage"
@@ -149,10 +152,10 @@ key_name_ec2 = "stage"
 # Create EC2s in these VPC indices
 ec2_vpc_index_list = [
   0,
-  1
+  # 1
 ]
 
 ec2_instance_names = [
   "cds-nbsl",
-  "bap-nbsl"
+  # "bap-nbsl"
 ]

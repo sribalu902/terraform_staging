@@ -1,688 +1,720 @@
-################################################################################
-# main.tf - Single-file demo infra (updated: Redpanda on ECS EC2 launch-type)
-# - VPC, public subnets, IGW, route table
-# - ECR repo
-# - ECS cluster
-#   - Fargate tasks (app, redis)
-#   - EC2 capacity provider + ASG (for Redpanda)
-# - Redpanda (Kafka-compatible) running on ECS EC2 host network
-# - App task & Redis (Fargate)
-# - PostgreSQL RDS (public) - enable PostGIS manually after creation
-#
-# WARNING: demo only. Public DB & open CIDRs used for simplicity.
-################################################################################
-
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.23"
-    }
-  }
+// main.tf
+locals {
+  name_prefix = "${var.project}-${var.environment}"
+  log_group   = "/ecs/${local.name_prefix}"
 }
 
-
-provider "aws" {
-  region = "ap-south-1"
-}
-
-data "aws_caller_identity" "me" {}
-
-################################################
-# 1) NETWORK: VPC, subnets, IGW, route table
-################################################
-
+# Basic VPC + subnets (you already have but include here)
 resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
+  cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
-
-  tags = { Name = "demo-vpc" }
+  tags = { Name = "${local.name_prefix}-vpc" }
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
-  tags   = { Name = "demo-igw" }
+  tags   = { Name = "${local.name_prefix}-igw" }
 }
 
+# Public subnets (for Bastion, Kafka EC2s, NAT)
 resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "ap-south-1a"
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, 1)
+  availability_zone       = var.az_a
   map_public_ip_on_launch = true
-  tags = { Name = "public-a" }
+  tags = { Name = "${local.name_prefix}-public-a" }
 }
 
 resource "aws_subnet" "public_b" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.2.0/24"
-  availability_zone       = "ap-south-1b"
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, 2)
+  availability_zone       = var.az_b
   map_public_ip_on_launch = true
-  tags = { Name = "public-b" }
+  tags = { Name = "${local.name_prefix}-public-b" }
+}
+
+# Private subnets (for ECS Fargate & RDS)
+resource "aws_subnet" "private_a" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, 3)
+  availability_zone       = var.az_a
+  map_public_ip_on_launch = false
+  tags = { Name = "${local.name_prefix}-private-a" }
+}
+
+resource "aws_subnet" "private_b" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, 4)
+  availability_zone       = var.az_b
+  map_public_ip_on_launch = false
+  tags = { Name = "${local.name_prefix}-private-b" }
+}
+
+# NAT & route tables (so private subnets can reach ECR/internet)
+resource "aws_eip" "nat" {
+  vpc = true
+
+  tags = {
+    Name = "${local.name_prefix}-nat-eip"
+  }
+}
+
+
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public_a.id
+  tags = { Name = "${local.name_prefix}-nat" }
 }
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
-  }
-  tags = { Name = "public-rt" }
+  route { cidr_block = "0.0.0.0/0"; gateway_id = aws_internet_gateway.igw.id }
+  tags = { Name = "${local.name_prefix}-public-rt" }
 }
+# ----------------------------------------------------------
+# PUBLIC ROUTE TABLE ASSOCIATIONS
+# ----------------------------------------------------------
 
-resource "aws_route_table_association" "public_a_assoc" {
+resource "aws_route_table_association" "public_a" {
   subnet_id      = aws_subnet.public_a.id
   route_table_id = aws_route_table.public.id
 }
-resource "aws_route_table_association" "public_b_assoc" {
+
+resource "aws_route_table_association" "public_b" {
   subnet_id      = aws_subnet.public_b.id
   route_table_id = aws_route_table.public.id
 }
 
-################################################
-# 2) SECURITY GROUPS
-################################################
+# ----------------------------------------------------------
+# PRIVATE ROUTE TABLE (Uses NAT Gateway)
+# ----------------------------------------------------------
 
-# ECS tasks SG: allow App (80), Redis (6379), Kafka (9092) inbound for demo.
-resource "aws_security_group" "ecs_sg" {
-  name        = "ecs-sg-demo"
-  description = "SG for ECS tasks (app, redis, kafka)"
-  vpc_id      = aws_vpc.main.id
-  
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
 
-  ingress {
-    description = "App HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat_gw.id
   }
 
+  tags = {
+    Name = "${local.name_prefix}-private-rt"
+  }
+}
+
+# ----------------------------------------------------------
+# PRIVATE ROUTE TABLE ASSOCIATIONS
+# ----------------------------------------------------------
+
+resource "aws_route_table_association" "private_a" {
+  subnet_id      = aws_subnet.private_a.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "private_b" {
+  subnet_id      = aws_subnet.private_b.id
+  route_table_id = aws_route_table.private.id
+}
+
+# SECURITY GROUPS
+# ALB SG
+resource "aws_security_group" "alb_sg" {
+  name   = "${local.name_prefix}-alb-sg"
+  vpc_id = aws_vpc.main.id
+  description = "ALB security group - public"
   ingress {
-    description = "Redis (demo)"
-    from_port   = 6379
-    to_port     = 6379
+    from_port   = var.onix_container_port
+    to_port     = var.onix_container_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Onix public"
   }
-
   ingress {
-    description = "Kafka / Redpanda (demo)"
+    from_port   = var.kafka_ui_container_port
+    to_port     = var.kafka_ui_container_port
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Kafka UI public"
+  }
+  egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+  tags = { Name = "${local.name_prefix}-alb-sg" }
+}
+
+# ECS tasks SG (private)
+resource "aws_security_group" "ecs_tasks_sg" {
+  name   = "${local.name_prefix}-ecs-sg"
+  vpc_id = aws_vpc.main.id
+  description = "ECS tasks SG - private"
+  # allow inbound from ALB for onix & kafka-ui (target groups will use this)
+  ingress {
+    from_port       = var.onix_container_port
+    to_port         = var.onix_container_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+    description     = "Allow ALB -> Onix"
+  }
+  ingress {
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+    description     = "Allow ALB -> Kafka UI container (8080)"
+  }
+  # allow internal communication between ecs tasks (cds -> redis, cds -> kafka)
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true
+    description = "Allow internal ECS traffic"
+  }
+  egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+  tags = { Name = "${local.name_prefix}-ecs-sg" }
+}
+
+# Kafka EC2 SG (public - allow 9092/9093 and ssh from bastion or your IP)
+resource "aws_security_group" "kafka_ec2_sg" {
+  name   = "${local.name_prefix}-kafka-ec2-sg"
+  vpc_id = aws_vpc.main.id
+  description = "Kafka EC2 nodes public for dev debugging"
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # consider restricting to your office/dev IPs
+    description = "SSH (dev)"
+  }
+  ingress {
     from_port   = 9092
     to_port     = 9092
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Kafka PLAINTEXT (dev)"
   }
-
-  egress {
-    description = "Allow all outbound"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+  ingress {
+    from_port   = 9093
+    to_port     = 9093
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Kafka controller (dev)"
   }
-
-  tags = { Name = "ecs-sg-demo" }
+  # allow ECS tasks to talk to kafka on 9092/9093
+  ingress {
+    from_port       = 9092
+    to_port         = 9093
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs_tasks_sg.id]
+    description     = "Allow ECS tasks -> Kafka"
+  }
+  egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+  tags = { Name = "${local.name_prefix}-kafka-ec2-sg" }
 }
 
-# EC2 instances SG (for ECS container instances)
-resource "aws_security_group" "ecs_instances_sg" {
-  name        = "ecs-instances-sg"
-  description = "SG for ECS EC2 instances (allow inbound for Kafka/Redis/App from internet for demo)"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "Allow Kafka"
-    from_port   = 9092
-    to_port     = 9092
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Allow Redis port"
-    from_port   = 6379
-    to_port     = 6379
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Allow App port"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # Allow ECS agent & Docker to reach ECR/STS/CloudWatch etc (outbound)
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "ecs-instances-sg" }
-}
-
-# RDS security group: allow Postgres from ECS tasks & optionally dev IPs
+# RDS SG - allow only ECS tasks and kafka EC2 (if needed)
 resource "aws_security_group" "rds_sg" {
-  name        = "rds-sg"
-  vpc_id      = aws_vpc.main.id
-  description = "SG for RDS Postgres - demo"
-
+  name   = "${local.name_prefix}-rds-sg"
+  vpc_id = aws_vpc.main.id
+  description = "RDS SG - allow only ECS tasks"
   ingress {
-    description     = "Postgres from ECS tasks"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_sg.id, aws_security_group.ecs_instances_sg.id]
+    security_groups = [aws_security_group.ecs_tasks_sg.id, aws_security_group.kafka_ec2_sg.id]
+    description = "Postgres from ECS and Kafka EC2"
   }
+  egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+  tags = { Name = "${local.name_prefix}-rds-sg" }
+}
 
-  # demo convenience
+# Bastion SG (public)
+resource "aws_security_group" "bastion_sg" {
+  name   = "${local.name_prefix}-bastion-sg"
+  vpc_id = aws_vpc.main.id
   ingress {
-    description = "Dev laptop (demo)"
-    from_port   = 5432
-    to_port     = 5432
+    from_port   = 22
+    to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"] # restrict in prod
   }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "rds-sg" }
+  egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+  tags = { Name = "${local.name_prefix}-bastion-sg" }
 }
 
-################################################
-# 3) ECR (container registry)
-################################################
-resource "aws_ecr_repository" "app_repo" {
-  name = "app-ecr-repo"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = { Name = "app-ecr" }
+####################
+# CloudWatch log groups
+####################
+resource "aws_cloudwatch_log_group" "ecs_logs" {
+  name              = local.log_group
+  retention_in_days = 7
 }
 
-################################################
-# 4) ECS CLUSTER
-################################################
-resource "aws_ecs_cluster" "app_cluster" {
-  name = "demo-ecs-cluster"
-  tags = { Name = "demo-ecs-cluster" }
-}
-
-################################################
-# 5) IAM roles for ECS task execution & EC2 instances
-################################################
-
-# Fargate/ECS task execution role
+####################
+# IAM Roles for ECS tasks
+####################
 resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "ecsTaskExecutionRole-demo"
-
+  name = "${local.name_prefix}-ecs-exec-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-    }]
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" } }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# EC2 instance role for ECS container instances (so EC2 can run containers, pull ECR, send logs)
-resource "aws_iam_role" "ecs_instance_role" {
-  name = "ecsInstanceRole-demo"
-
+resource "aws_iam_role" "ecs_task_role" {
+  name = "${local.name_prefix}-ecs-task-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-      Action = "sts:AssumeRole"
-    }]
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" } }]
   })
 }
 
-# Attach necessary managed policies to instance role
-resource "aws_iam_role_policy_attachment" "ecs_instance_managed_1" {
-  role       = aws_iam_role.ecs_instance_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+####################
+# ECR repos (placeholders)
+####################
+resource "aws_ecr_repository" "onix_repo" {
+  name = "${local.name_prefix}-onix"
 }
-resource "aws_iam_role_policy_attachment" "ecs_instance_managed_2" {
-  role       = aws_iam_role.ecs_instance_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+resource "aws_ecr_repository" "cds_repo" {
+  name = "${local.name_prefix}-cds"
 }
-resource "aws_iam_role_policy_attachment" "ecs_instance_managed_3" {
-  role       = aws_iam_role.ecs_instance_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_instance_profile" "ecs_instance_profile" {
-  name = "ecsInstanceProfile-demo"
-  role = aws_iam_role.ecs_instance_role.name
+resource "aws_ecr_repository" "kafka_ui_repo" {
+  name = "${local.name_prefix}-kafka-ui"
 }
 
-################################################
-# 6) ECS EC2 Capacity: Launch Template + ASG + Capacity Provider
-#    (t3.large as requested)
-################################################
-
-# Hardcoded ECS optimized AMI to avoid SSM permissions issue
-locals {
-  ecs_ami_id = "ami-0298e0c0441cb5c66"
-  # ECS optimized Amazon Linux 2 for ap-south-1
-}
-
-resource "aws_launch_template" "ecs_lt" {
-  name_prefix   = "ecs-redpanda-"
-  image_id      = local.ecs_ami_id
-  instance_type = "t3.large"
-
-  iam_instance_profile {
-    name = aws_iam_instance_profile.ecs_instance_profile.name
+####################
+# ECS cluster
+####################
+resource "aws_ecs_cluster" "cluster" {
+  name = "${local.name_prefix}-cluster"
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
   }
+  tags = { Name = "${local.name_prefix}-cluster" }
+}
 
-  block_device_mappings {
-    device_name = "/dev/xvda"
-    ebs {
-      volume_size = 50
-      volume_type = "gp3"
-    }
+####################
+# Launch template + ASG for Kafka EC2 instances (host mode)
+####################
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
   }
+  owners = ["099720109477"] # Canonical
+}
+
+resource "aws_launch_template" "kafka_lt" {
+  name_prefix   = "${local.name_prefix}-kafka-lt-"
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = var.kafka_instance_type
+  key_name      = var.key_name
+
+  iam_instance_profile { name = aws_iam_instance_profile.kafka_instance_profile.name }
 
   network_interfaces {
-    security_groups             = [aws_security_group.ecs_instances_sg.id]
+    security_groups             = [aws_security_group.kafka_ec2_sg.id]
     associate_public_ip_address = true
   }
 
-  # 🚀 FIX: Create Redpanda storage directory + permissions
   user_data = base64encode(<<EOF
 #!/bin/bash
+# install ECS agent & Docker & jq
+apt-get update -y
+apt-get install -y awscli jq docker.io
+systemctl enable docker
+systemctl start docker
 
-# ECS cluster
-echo "ECS_CLUSTER=${aws_ecs_cluster.app_cluster.name}" >> /etc/ecs/ecs.config
-
-# Redpanda hostPath directory
-mkdir -p /var/lib/redpanda/data
-
-# 🔥 Required by Redpanda v23: Must exist or startup FAILS
-touch /var/lib/redpanda/data/.redpanda_data_dir
-
-# Permissions
-chmod -R 777 /var/lib/redpanda
-
+# install ecs agent (amazon ecs-init not available on ubuntu by default) - use amazon-ecs-init on Amazon Linux
+# Register as ECS container instance by writing ECS_CLUSTER
+echo "ECS_CLUSTER=${aws_ecs_cluster.cluster.name}" > /etc/ecs/ecs.config || true
+# simple: start ecs agent via docker (this is a dev-friendly approach)
+docker run -d --name ecs-agent --restart always -e AWS_DEFAULT_REGION=${var.aws_region} \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  amazon/amazon-ecs-agent:latest
 EOF
-)
+  )
 
-lifecycle {
-  create_before_destroy = true
+  lifecycle { create_before_destroy = true }
 }
 
-}
-
-
-resource "aws_autoscaling_group" "ecs_asg" {
-  name             = "ecs-redpanda-asg"
-  desired_capacity = 1
-  max_size         = 2
-  min_size         = 1
-  protect_from_scale_in = true  # REQUIRED FIX
+resource "aws_autoscaling_group" "kafka_asg" {
+  name                      = "${local.name_prefix}-kafka-asg"
+  desired_capacity          = var.kafka_desired_count
+  max_size                  = var.kafka_desired_count
+  min_size                  = var.kafka_desired_count
   launch_template {
-    id      = aws_launch_template.ecs_lt.id
+    id      = aws_launch_template.kafka_lt.id
     version = "$Latest"
   }
-
   vpc_zone_identifier = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-
-  lifecycle {
-    create_before_destroy = true
-  }
+  force_delete = true
 }
 
-resource "aws_ecs_capacity_provider" "ecs_capacity" {
-  name = "redpanda-capacity"
+resource "aws_iam_role" "kafka_instance_role" {
+  name = "${local.name_prefix}-kafka-instance-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+}
 
+resource "aws_iam_role_policy_attachment" "kafka_instance_managed" {
+  role       = aws_iam_role.kafka_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+resource "aws_iam_instance_profile" "kafka_instance_profile" {
+  name = "${local.name_prefix}-kafka-instance-profile"
+  role = aws_iam_role.kafka_instance_role.name
+}
+
+# Capacity provider to attach ASG to ECS cluster
+resource "aws_ecs_capacity_provider" "kafka_capacity" {
+  name = "${local.name_prefix}-capacity"
   auto_scaling_group_provider {
-    auto_scaling_group_arn = aws_autoscaling_group.ecs_asg.arn
-
+    auto_scaling_group_arn = aws_autoscaling_group.kafka_asg.arn
     managed_scaling {
-      status                    = "ENABLED"
-      target_capacity           = 75
-      minimum_scaling_step_size = 1
-      maximum_scaling_step_size = 1000
+      status                    = "DISABLED"
     }
-
     managed_termination_protection = "ENABLED"
   }
 }
 
 resource "aws_ecs_cluster_capacity_providers" "attach_capacity" {
-  cluster_name       = aws_ecs_cluster.app_cluster.name
-  capacity_providers = [aws_ecs_capacity_provider.ecs_capacity.name]
+  cluster_name       = aws_ecs_cluster.cluster.name
+  capacity_providers = [aws_ecs_capacity_provider.kafka_capacity.name]
 
   default_capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.ecs_capacity.name
+    capacity_provider = aws_ecs_capacity_provider.kafka_capacity.name
     weight            = 1
   }
 }
 
-
-################################################
-# 7) CloudWatch log groups
-################################################
-resource "aws_cloudwatch_log_group" "redis_logs" {
-  name              = "/ecs/redis"
-  retention_in_days = 3
-}
-resource "aws_cloudwatch_log_group" "redpanda_logs" {
-  name              = "/ecs/redpanda"
-  retention_in_days = 3
-}
-resource "aws_cloudwatch_log_group" "app_logs" {
-  name              = "/ecs/app"
-  retention_in_days = 3
-}
-
-################################################
-# 8) ECS TASKS & SERVICES
-#    - Redis (Fargate)
-#    - Redpanda (EC2 launch type)
-#    - App (Fargate) - commented but skeleton present
-################################################
-
-# ---------- Redis Task Definition (Fargate) ----------
-resource "aws_ecs_task_definition" "redis_task" {
-  family                   = "redis-task"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "256"
-  memory                   = "512"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-
-  container_definitions = jsonencode([
-    {
-      name = "redis"
-      image = "redis:7"
-      essential = true
-      portMappings = [
-        { containerPort = 6379, hostPort = 6379, protocol = "tcp" }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group" = aws_cloudwatch_log_group.redis_logs.name
-          "awslogs-region" = "ap-south-1"
-          "awslogs-stream-prefix" = "redis"
-        }
-      }
-    }
-  ])
-}
-
-resource "aws_ecs_service" "redis_service" {
-  name            = "redis-service"
-  cluster         = aws_ecs_cluster.app_cluster.id
-  task_definition = aws_ecs_task_definition.redis_task.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets         = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-    security_groups = [aws_security_group.ecs_sg.id]
-    assign_public_ip = true
-  }
-
-  depends_on = [aws_cloudwatch_log_group.redis_logs]
-}
-
-# ---------- Redpanda Task Definition (EC2 host network) ----------
-# Note: requires_compatibilities = ["EC2"] and network_mode = "host"
-resource "aws_ecs_task_definition" "kafka_task" {
-  family                   = "redpanda-ec2"
-  requires_compatibilities = ["EC2"]
-  network_mode             = "host"
-  cpu                      = "1024"
-  memory                   = "2048"
-
-  # container definitions for host mode
-  container_definitions = jsonencode([
-    {
-      name      = "redpanda"
-      image     = "docker.redpanda.com/redpandadata/redpanda:v23.3.8"
-      essential = true
-
-      # host networking -> ports are on host; ensure instance SG allows them
-      portMappings = [
-        { containerPort = 9092, hostPort = 9092, protocol = "tcp" }
-      ]
-
-      # mount to host path (ECS EC2 will map host path)
-      mountPoints = [
-        {
-          containerPath = "/var/lib/redpanda/data"
-          sourceVolume  = "rpd-data"
-          readOnly      = false
-        }
-      ]
-
-      ccommand = [
-  "/bin/bash",
-  "-c",
-  <<EOF
-IP=$(curl -s $ECS_CONTAINER_METADATA_URI_V4 | jq -r '.Networks[0].IPv4Addresses[0]');
-/usr/bin/rpk redpanda start \
-  --overprovisioned \
-  --smp 1 \
-  --memory 1G \
-  --reserve-memory 0M \
-  --node-id 0 \
-  --check=false \
-  --kafka-addr PLAINTEXT://0.0.0.0:9092 \
-  --advertise-kafka-addr PLAINTEXT://$IP:9092;
-EOF
-]
-
-
-      environment = [
-        { name = "REDPANDA_AUTO_CREATE_TOPICS", value = "true" }
-      ]
-
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.redpanda_logs.name
-          "awslogs-region"        = "ap-south-1"
-          "awslogs-stream-prefix" = "redpanda"
-        }
-      }
-    }
-  ])
-
-  # volumes - sourceVolume will map to host path on EC2 instances
-  volume {
-    name = "rpd-data"
-    # Each EC2 instance will store data under /var/lib/redpanda/data (create by userdata or AMI)
-    host_path = "/var/lib/redpanda/data"
-  }
-}
-
-# Redpanda ECS service (use capacity provider -> EC2 launch type)
-resource "aws_ecs_service" "kafka_service" {
-  name            = "redpanda-service"
-  cluster         = aws_ecs_cluster.app_cluster.id
-  task_definition = aws_ecs_task_definition.kafka_task.arn
-  desired_count   = 1
-  force_new_deployment = true    # <-- REQUIRED FIX
-
-  capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.ecs_capacity.name
-    weight            = 1
-  }
-
-  deployment_minimum_healthy_percent = 50
-  deployment_maximum_percent         = 200
-
-  depends_on = [aws_cloudwatch_log_group.redpanda_logs]
-}
-
-# ---------- App Task Definition (Fargate) ----------
-# Skeleton - keep commented or enable and adjust repository URL for devs
-resource "aws_ecs_task_definition" "app_task" {
-  family                   = "app-task"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "512"
-  memory                   = "1024"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-
-  container_definitions = jsonencode([
-    {
-      name = "app"
-      image = "${aws_ecr_repository.app_repo.repository_url}:latest"
-      essential = true
-      portMappings = [
-        { containerPort = 80, hostPort = 80, protocol = "tcp" }
-      ]
-      environment = [
-        { name = "DATABASE_HOST", value = aws_db_instance.postgres.address },
-        { name = "DATABASE_PORT", value = "5432" },
-        { name = "DATABASE_USER", value = "postgresadmin" },
-        { name = "DATABASE_PASSWORD", value = "postgrespassword" },
-        { name = "REDIS_HOST", value = "redis-service" },   # service name (internal)
-        { name = "REDIS_PORT", value = "6379" },
-        { name = "KAFKA_BROKER", value = "PLAINTEXT://<replace-with-ec2-host-private-ip>:9092" }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group" = aws_cloudwatch_log_group.app_logs.name
-          "awslogs-region" = "ap-south-1"
-          "awslogs-stream-prefix" = "app"
-        }
-      }
-    }
-  ])
-}
-
-resource "aws_ecs_service" "app_service" {
-  name            = "app-service"
-  cluster         = aws_ecs_cluster.app_cluster.id
-  task_definition = aws_ecs_task_definition.app_task.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets         = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-    security_groups = [aws_security_group.ecs_sg.id]
-    assign_public_ip = true
-  }
-
-  depends_on = [aws_cloudwatch_log_group.app_logs]
-}
-
-################################################
-# 9) POSTGRES RDS (public) - demo
-#    IMPORTANT: enable PostGIS manually after DB is up
-################################################
-
-resource "aws_db_subnet_group" "postgres_subnet_group" {
-  name       = "demo-postgres-subnet-group"
-  subnet_ids = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-  tags = { Name = "demo-postgres-subnet-group" }
+####################
+# RDS Postgres (private)
+####################
+resource "aws_db_subnet_group" "db_subnet_group" {
+  name       = "${local.name_prefix}-db-subnet-group"
+  subnet_ids = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+  tags = { Name = "${local.name_prefix}-db-subnet-group" }
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier             = "demo-postgres"
+  identifier             = "${local.name_prefix}-postgres"
   engine                 = "postgres"
   engine_version         = "17.7"
-  instance_class         = "db.t3.micro"
-  allocated_storage      = 20
-  username               = "postgresadmin"
-  password               = "postgrespassword"
-  publicly_accessible    = true
+  instance_class         = var.db_instance_class
+  allocated_storage      = var.db_allocated_storage
+  username               = var.db_username
+  password               = var.db_password
+  db_name                = var.db_name
   skip_final_snapshot    = true
-
-  db_subnet_group_name   = aws_db_subnet_group.postgres_subnet_group.name
+  publicly_accessible    = false
+  db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
-
-  tags = { Name = "demo-postgres" }
+  tags = { Name = "${local.name_prefix}-postgres" }
 }
 
-################################################
-# 10) OUTPUTS - quick references for devs
-################################################
-
-output "vpc_id" {
-  description = "VPC id"
-  value       = aws_vpc.main.id
+####################
+# ALB (public) with listeners 8002 and 8081 if create_alb = true
+####################
+resource "aws_lb" "alb" {
+  count = var.create_alb ? 1 : 0
+  name               = "${local.name_prefix}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+  tags = { Name = "${local.name_prefix}-alb" }
 }
 
-output "public_subnets" {
-  description = "Public subnets"
-  value       = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+# Target groups for Onix and Kafka UI
+resource "aws_lb_target_group" "onix_tg" {
+  count    = var.create_alb ? 1 : 0
+  name     = "${local.name_prefix}-onix-tg"
+  port     = var.onix_container_port
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+  target_type = "ip"
+  health_check { path = "/actuator/health"; matcher = "200-399"; interval = 10; timeout = 5; healthy_threshold = 2; unhealthy_threshold = 3 }
 }
 
-output "ecr_repo_url" {
-  description = "ECR repository URL - push your app image here: <repo>:latest"
-  value       = aws_ecr_repository.app_repo.repository_url
+resource "aws_lb_target_group" "kafka_ui_tg" {
+  count    = var.create_alb ? 1 : 0
+  name     = "${local.name_prefix}-kafka-ui-tg"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+  target_type = "ip"
+  health_check { path = "/"; matcher = "200-399"; interval = 10; timeout = 5; healthy_threshold = 2; unhealthy_threshold = 3 }
 }
 
-output "ecs_cluster_name" {
-  description = "ECS cluster name"
-  value       = aws_ecs_cluster.app_cluster.name
+# Listeners
+resource "aws_lb_listener" "onix_listener" {
+  count = var.create_alb ? 1 : 0
+  load_balancer_arn = aws_lb.alb[0].arn
+  port              = var.onix_container_port
+  protocol          = "HTTP"
+  default_action { type = "forward"; target_group_arn = aws_lb_target_group.onix_tg[0].arn }
 }
 
-output "redis_service_name" {
-  description = "Redis service name"
-  value       = aws_ecs_service.redis_service.name
+resource "aws_lb_listener" "kafka_ui_listener" {
+  count = var.create_alb ? 1 : 0
+  load_balancer_arn = aws_lb.alb[0].arn
+  port              = var.kafka_ui_container_port
+  protocol          = "HTTP"
+  default_action { type = "forward"; target_group_arn = aws_lb_target_group.kafka_ui_tg[0].arn }
 }
 
-output "kafka_service_name" {
-  description = "Redpanda service name (EC2 launch type)"
-  value       = aws_ecs_service.kafka_service.name
+####################
+# ECS Task Definitions via templatefile()
+####################
+# Build common vars used in templatefile
+locals {
+  kafka_bootstrap = "kafka-bpp:9092"         # service name used by tasks; we'll also expose kafka via cluster host for debugging
+  spring_datasource_url = "jdbc:postgresql://${aws_db_instance.postgres.address}:5432/${var.db_name}"
+  redis_url = "redis://redis-bpp:${var.redis_container_port}"
+  java_opts = "-XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/dump -XX:+UseStringDeduplication --enable-native-access=ALL-UNNAMED"
+  app_args = join(" ", [
+    "--spring.threads.virtual.enabled=true",
+    "--spring.profiles.active=kafka,postgres,redis,dev",
+    "--spring.kafka.consumer.bootstrap-servers=${local.kafka_bootstrap}",
+    "--spring.kafka.producer.bootstrap-servers=${local.kafka_bootstrap}",
+    "--spring.datasource.url=${local.spring_datasource_url}",
+    "--spring.datasource.username=${var.db_username}",
+    "--spring.datasource.password=${var.db_password}",
+    "--spring.data.redis.url=${local.redis_url}"
+  ])
 }
 
-output "postgres_endpoint" {
-  description = "Postgres endpoint - use psql or your app to connect"
-  value       = aws_db_instance.postgres.address
+data "templatefile" "onix_task_json" {
+  template = file("${path.module}/ecs/onix_task.json")
+  vars = {
+    onix_cpu = var.onix_cpu
+    onix_memory = var.onix_memory
+    onix_image = var.onix_image
+    execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
+    task_role_arn = aws_iam_role.ecs_task_role.arn
+    onix_container_port = var.onix_container_port
+    kafka_bootstrap = local.kafka_bootstrap
+    spring_datasource_url = local.spring_datasource_url
+    db_username = var.db_username
+    db_password = var.db_password
+    redis_url = local.redis_url
+    log_group = local.log_group
+    aws_region = var.aws_region
+  }
 }
 
-################################################################################
-# NOTES & ACTIONS AFTER APPLY
-#
-# 1) After terraform apply:
-#    - Wait for EC2 instance(s) to be provisioned in the ASG. They register to the ECS cluster
-#      (check EC2 console -> instances -> user-data and /var/lib/ecs/ecs.config).
-#    - ECS EC2 instances will create the host path /var/lib/redpanda/data if needed (you may
-#      create this directory in user_data if AMI doesn't create it).
-#
-# 2) We use host networking for Redpanda. To get the Redpanda broker address for app config:
-#      - In EC2 console, find the ECS instance running the redpanda task -> note its Private IP
-#      - Use PLAINTEXT://<instance-private-ip>:9092 in your app environment (or set up a discovery script).
-#
-# 3) If you want terraform to write the instance private IP to a parameter or SSM for the app,
-#    we can add a small script or use the AWS CLI in userdata to push the IP after boot.
-#
-# 4) Redpanda requires directories with correct permissions on host. If Redpanda fails,
-#    SSH into the EC2 instance (enable SSH in SG) or use SSM to check /var/lib/redpanda/data ownership.
-#
-# 5) For production, prefer:
-#      - dedicated EBS for redpanda data + proper RAID or volumes
-#      - use EFS only if appropriate
-#      - use MSK or a managed Kafka for production
-#
-################################################################################
+resource "aws_ecs_task_definition" "onix" {
+  family                   = "onix-plugin-task"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.onix_cpu)
+  memory                   = tostring(var.onix_memory)
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+  container_definitions    = data.templatefile.onix_task_json.rendered
+}
+
+data "templatefile" "kafka_ui_task_json" {
+  template = file("${path.module}/ecs/kafka_ui_task.json")
+  vars = {
+    kafka_ui_cpu = var.kafka_ui_cpu
+    kafka_ui_memory = var.kafka_ui_memory
+    kafka_ui_image = var.kafka_ui_image
+    execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
+    task_role_arn = aws_iam_role.ecs_task_role.arn
+    kafka_bootstrap = local.kafka_bootstrap
+    log_group = local.log_group
+    aws_region = var.aws_region
+  }
+}
+
+resource "aws_ecs_task_definition" "kafka_ui" {
+  family                   = "kafka-ui-task"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.kafka_ui_cpu)
+  memory                   = tostring(var.kafka_ui_memory)
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+  container_definitions    = data.templatefile.kafka_ui_task_json.rendered
+}
+
+data "templatefile" "cds_task_json" {
+  template = file("${path.module}/ecs/cds_task.json")
+  vars = {
+    cds_cpu = var.cds_cpu
+    cds_memory = var.cds_memory
+    cds_image = var.cds_image
+    execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
+    task_role_arn = aws_iam_role.ecs_task_role.arn
+    cds_container_port = var.cds_container_port
+    java_opts = local.java_opts
+    app_args = local.app_args
+    spring_datasource_url = local.spring_datasource_url
+    db_username = var.db_username
+    db_password = var.db_password
+    kafka_bootstrap = local.kafka_bootstrap
+    redis_url = local.redis_url
+    log_group = local.log_group
+    aws_region = var.aws_region
+  }
+}
+
+resource "aws_ecs_task_definition" "cds" {
+  family                   = "cds-app-task"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.cds_cpu)
+  memory                   = tostring(var.cds_memory)
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+  container_definitions    = data.templatefile.cds_task_json.rendered
+}
+
+data "templatefile" "redis_task_json" {
+  template = file("${path.module}/ecs/redis_task.json")
+  vars = {
+    redis_cpu = var.redis_cpu
+    redis_memory = var.redis_memory
+    redis_image = var.redis_image
+    execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
+    task_role_arn = aws_iam_role.ecs_task_role.arn
+    redis_container_port = var.redis_container_port
+    log_group = local.log_group
+    aws_region = var.aws_region
+  }
+}
+
+resource "aws_ecs_task_definition" "redis" {
+  family                   = "redis-task"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.redis_cpu)
+  memory                   = tostring(var.redis_memory)
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+  container_definitions    = data.templatefile.redis_task_json.rendered
+}
+
+####################
+# ECS Services
+####################
+# Redis
+resource "aws_ecs_service" "redis" {
+  name            = "redis-service"
+  cluster         = aws_ecs_cluster.cluster.id
+  task_definition = aws_ecs_task_definition.redis.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_groups = [aws_security_group.ecs_tasks_sg.id]
+    assign_public_ip = false
+  }
+
+  depends_on = [aws_cloudwatch_log_group.ecs_logs]
+}
+
+# CDS App (internal only)
+resource "aws_ecs_service" "cds" {
+  name            = "cds-app-service"
+  cluster         = aws_ecs_cluster.cluster.id
+  task_definition = aws_ecs_task_definition.cds.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_groups = [aws_security_group.ecs_tasks_sg.id]
+    assign_public_ip = false
+  }
+
+  depends_on = [aws_ecs_service.redis, aws_db_instance.postgres]
+}
+
+# Kafka UI (Fargate) - private, fronted by ALB target group (ip targets)
+resource "aws_ecs_service" "kafka_ui" {
+  name            = "kafka-ui-service"
+  cluster         = aws_ecs_cluster.cluster.id
+  task_definition = aws_ecs_task_definition.kafka_ui.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_groups = [aws_security_group.ecs_tasks_sg.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = var.create_alb ? aws_lb_target_group.kafka_ui_tg[0].arn : ""
+    container_name   = "kafka-ui"
+    container_port   = 8080
+  }
+
+  depends_on = [aws_ecs_service.redis]
+}
+
+# Onix plugin (Fargate) - private, fronted by ALB
+resource "aws_ecs_service" "onix" {
+  name            = "onix-plugin-service"
+  cluster         = aws_ecs_cluster.cluster.id
+  task_definition = aws_ecs_task_definition.onix.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_groups = [aws_security_group.ecs_tasks_sg.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = var.create_alb ? aws_lb_target_group.onix_tg[0].arn : ""
+    container_name   = "onix-plugin"
+    container_port   = var.onix_container_port
+  }
+
+  depends_on = [aws_ecs_service.redis, aws_ecs_service.kafka_ui, aws_db_instance.postgres]
+}
+
+####################
+# ALB target registration happens automatically via aws ecs service load_balancer config above (ip mode)
+####################
+
+####################
+# Bastion host
+####################
+resource "aws_instance" "bastion" {
+  ami           = data.aws_ami.ubuntu.id
+  instance_type = var.bastion_instance_type
+  key_name      = var.key_name
+  subnet_id     = aws_subnet.public_a.id
+  vpc_security_group_ids = [aws_security_group.bastion_sg.id]
+  tags = { Name = "${local.name_prefix}-bastion" }
+}
+
+####################
+# Outputs
+####################
+output "vpc_id" { value = aws_vpc.main.id }
+output "private_subnets" { value = [aws_subnet.private_a.id, aws_subnet.private_b.id] }
+output "public_subnets" { value = [aws_subnet.public_a.id, aws_subnet.public_b.id] }
+output "ecs_cluster_name" { value = aws_ecs_cluster.cluster.name }
+output "postgres_endpoint" { value = aws_db_instance.postgres.address }
+output "onix_service_name" { value = aws_ecs_service.onix.name }
+output "kafka_ui_service_name" { value = aws_ecs_service.kafka_ui.name }
+output "redis_service_name" { value = aws_ecs_service.redis.name }
+output "cds_service_name" { value = aws_ecs_service.cds.name }
+output "alb_dns" { value = var.create_alb ? aws_lb.alb[0].dns_name : "" }

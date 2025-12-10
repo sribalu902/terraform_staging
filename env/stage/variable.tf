@@ -97,6 +97,10 @@ variable "admin_user_arns" {
   default = []
 }
 
+variable "admin_role_arn" {
+  type    = string
+  default = ""
+}
 ##############################
 # TAGS (COMMON TAGGING)
 ##############################

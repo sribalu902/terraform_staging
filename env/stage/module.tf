@@ -100,6 +100,7 @@ module "security_group_eks" {
   create_vpc = var.create_vpc
   vpc_ids    = module.vpc.vpc_ids
   tags       = var.tags
+  vpc_cidrs = var.vpc_cidrs
 }
 
 
@@ -115,38 +116,29 @@ module "eks" {
   source = "../../eks"
   count  = var.create_vpc
 
-  ############################################
-  # CLUSTER NAME PER VPC
-  ############################################
   cluster_name = "${var.cluster_name_prefix}-${var.vpc_names[count.index]}"
 
-  ############################################
-  # VPC + SUBNETS (PRIVATE SUBNETS FOR NODES)
-  ############################################
   vpc_id = module.vpc.vpc_ids[count.index]
-
- subnet_ids = module.vpc.private_subnet_ids[count.index]
+  subnet_ids = slice(module.vpc.private_subnet_ids[count.index], 0, 2)
 
   ############################################
-  # WORKER SECURITY GROUP FROM SECURITY_GROUP_EKS MODULE
+  # CLUSTER + WORKER SGs (CRITICAL)
   ############################################
+  cluster_security_group_ids = [
+    module.security_group_eks.eks_cluster_sg_ids[count.index]
+  ]
+
   worker_sg_id = module.security_group_eks.eks_worker_sg_ids[count.index]
-  ############################################
-  #  SSH KEY FOR WORKER NODES
-  ############################################
+
   node_ssh_key_name = var.node_ssh_key_name
-  ############################################
-  # NODE GROUPS (DYNAMIC)
-  ############################################
+
   node_groups     = var.node_groups
   node_group_tags = { Environment = var.environment }
 
-  ############################################
-  # CLUSTER VERSION + TAGS
-  ############################################
   eks_version = var.eks_version
   tags        = var.tags
 }
+
 ##########################################
 # Bastion Module
 ##########################################

@@ -6,7 +6,11 @@ variable "vpc_ids" {
   type = list(string)
 }
 
+variable "vpc_cidrs" {
+  type = list(string)
+}
+
 variable "tags" {
-  type    = map(string)
+  type = map(string)
   default = {}
 }

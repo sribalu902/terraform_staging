@@ -7,18 +7,15 @@ variable "vpc_id" {
 }
 
 variable "subnet_ids" {
-  type        = list(string)
-  description = "Private subnets for EKS worker nodes"
+  type = list(string)
+}
+
+variable "cluster_security_group_ids" {
+  type = list(string)
 }
 
 variable "worker_sg_id" {
-  type        = string
-  description = "Security group for worker nodes created by security_group_eks module"
-}
-
-variable "eks_version" {
-  type    = string
-  default = "1.27"
+  type = string
 }
 
 variable "node_ssh_key_name" {
@@ -30,27 +27,31 @@ variable "node_groups" {
   type = list(object({
     name           = string
     instance_types = list(string)
+    disk_size      = number
     desired_size   = number
     min_size       = number
     max_size       = number
-    disk_size      = number
-    labels         = optional(map(string), {})
-    taints         = optional(list(object({
-                      key    = string
-                      value  = string
-                      effect = string
-                    })), [])
-    capacity_type  = optional(string, "ON_DEMAND")
-    max_unavailable = optional(number, 1)
+    capacity_type  = optional(string)
+    ami_type       = optional(string)
+    labels         = optional(map(string))
+    max_unavailable = optional(number)
   }))
 }
 
+variable "eks_version" {
+  type = string
+}
+
 variable "tags" {
-  type    = map(string)
-  default = {}
+  type = map(string)
 }
 
 variable "node_group_tags" {
-  type    = map(string)
+  type = map(string)
   default = {}
+}
+
+variable "default_ami_type" {
+  type    = string
+  default = "AL2_x86_64"
 }
