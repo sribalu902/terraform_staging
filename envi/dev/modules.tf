@@ -37,8 +37,8 @@ module "rds" {
 
   allowed_sg_ids = [
     [
-      # module.ecs.ecs_sg_id,
-      # module.kafka.kafka_sg_id,
+      #  module.ecs.ecs_sg_id,
+      #  module.kafka.kafka_sg_id,
       module.bastion.sg_ids[0]
     ]
   ]
@@ -91,7 +91,7 @@ module "ecs_cluster" {
   ########################################
   # EC2 HOST (Kafka)
   ########################################
-  ami_id       = var.kafka_ami_id
+  # ami_id       = var.kafka_ami_id
   instance_type = var.kafka_instance_type
   key_name      = var.kafka_key_name
 
@@ -101,3 +101,137 @@ module "ecs_cluster" {
 }
 
 
+# #############################################
+# # REDIS SERVICE — FARGATE
+# ############################################
+# module "redis" {
+#   source = "../../ecs/ecs-service"
+
+#   service_name  = "redis-bpp"
+#   cluster_arn   = module.ecs_cluster.cluster_arn
+
+#   cpu            = var.redis_cpu
+#   memory         = var.redis_memory
+#   container_port = var.redis_port
+
+#   subnet_ids         = module.vpc.private_subnet_ids[0]
+#   security_group_ids = [module.ecs_cluster.ecs_tasks_sg_id]
+#   assign_public_ip   = false
+
+#   execution_role_arn = module.ecs_cluster.execution_role_arn
+#   task_role_arn      = module.ecs_cluster.task_role_arn
+
+#   template_path = "${path.module}/../../ecs/ecs-taskdef/redis.json.tpl"
+# }
+
+
+
+# ############################################
+# # KAFKA SERVICE — EC2 Host Mode (from JSON)
+# ############################################
+# module "kafka" {
+#   source = "../../ecs/ecs-ec2-service"
+
+#   service_name = "kafka-bpp"
+#   cluster_arn  = module.ecs_cluster.cluster_arn
+
+#   cpu    = var.kafka_cpu
+#   memory = var.kafka_memory
+
+#   execution_role_arn = module.ecs_cluster.execution_role_arn
+#   task_role_arn      = module.ecs_cluster.task_role_arn
+
+#   capacity_provider_name = module.ecs_cluster.capacity_provider_name
+
+#   template_path = "${path.module}/../../ecs/ecs-taskdef/kafka.json.tpl"
+# }
+
+
+# ############################################
+# # KAFKA UI SERVICE — Fargate
+# ############################################
+# module "kafka_ui" {
+#   source = "../../ecs/ecs-service"
+
+#   # --- Service identity ---
+#   service_name  = "kafka-ui-bpp"
+#   cluster_arn   = module.ecs_cluster.cluster_arn
+
+#   # --- Task Sizing (goes into JSON: ${CPU}, ${MEMORY}) ---
+#   cpu            = var.kafka_ui_cpu
+#   memory         = var.kafka_ui_memory
+
+#   # Kafka UI listens on port 8080 internally
+#   container_port = var.kafka_ui_port
+
+#   # --- Networking ---
+#   subnet_ids         = module.vpc.private_subnet_ids[0]
+#   security_group_ids = [module.ecs_cluster.ecs_tasks_sg_id]
+#   assign_public_ip   = false
+
+#   # --- IAM roles from ECS cluster ---
+#   execution_role_arn = module.ecs_cluster.execution_role_arn
+#   task_role_arn      = module.ecs_cluster.task_role_arn
+
+#   # --- JSON Template Path ---
+#   template_path = "${path.module}/../../ecs/task-defs/kafka-ui.json"
+# }
+
+
+# ############################################
+# # ONIX PLUGIN SERVICE — Fargate
+# ############################################
+# module "onix" {
+#   source = "../../ecs/ecs-service"
+
+#   # --- Service Identity ---
+#   service_name  = "onix-bpp-plugin"
+#   cluster_arn   = module.ecs_cluster.cluster_arn
+
+#   # --- Task Resources (to JSON: ${CPU}, ${MEMORY}) ---
+#   cpu            = var.onix_cpu
+#   memory         = var.onix_memory
+
+#   # Onix always listens on port 8002
+#   container_port = var.onix_port
+
+#   # --- Networking ---
+#   subnet_ids         = module.vpc.private_subnet_ids[0]
+#   security_group_ids = [module.ecs_cluster.ecs_tasks_sg_id]
+#   assign_public_ip   = false
+
+#   # --- IAM roles from ECS cluster ---
+#   execution_role_arn = module.ecs_cluster.execution_role_arn
+#   task_role_arn      = module.ecs_cluster.task_role_arn
+
+#   # --- JSON Template ---
+#   template_path = "${path.module}/../../ecs/task-defs/onix.json"
+# }
+
+# ############################################
+# # CDS SERVICE — Fargate
+# ############################################
+# module "cds" {
+#   source = "../../ecs/ecs-service"
+
+#   service_name  = "cds-app"
+#   cluster_arn   = module.ecs_cluster.cluster_arn
+
+#   cpu           = var.cds_cpu
+#   memory        = var.cds_memory
+#   container_port = 8080
+
+#   subnet_ids         = module.vpc.private_subnet_ids[0]
+#   security_group_ids = [module.ecs_cluster.ecs_tasks_sg_id]
+#   assign_public_ip   = false
+
+#   execution_role_arn = module.ecs_cluster.execution_role_arn
+#   task_role_arn      = module.ecs_cluster.task_role_arn
+
+#   template_path = "${path.module}/../../ecs/task-defs/cds.json"
+
+#   # NEW
+# #   cds_java_opts = var.cds_java_opts
+# #   cds_app_args  = var.cds_app_args
+# #   cds_image     = var.cds_image
+# }

@@ -1,3 +1,10 @@
+
+############################################
+# ECS OPTIMIZED AMI (REQUIRED FOR EC2 ECS)
+############################################
+data "aws_ssm_parameter" "ecs_ami" {
+  name = "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id"
+}
 ############################################
 # ECS CLUSTER MODULE
 # Supports: Fargate + EC2 (Kafka host mode)
@@ -114,13 +121,67 @@ resource "aws_iam_instance_profile" "ecs_instance_profile" {
   role = aws_iam_role.ecs_instance_role.name
 }
 
+
+
+############################################
+# IAM ROLE: ECS TASK EXECUTION ROLE
+# Required for:
+# - Pulling images from ECR
+# - Writing logs to CloudWatch
+############################################
+
+resource "aws_iam_role" "ecs_execution_role" {
+  name = "${var.name_prefix}-ecs-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
+  role       = aws_iam_role.ecs_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+############################################
+# IAM ROLE: ECS TASK ROLE
+# Used by application containers (CDS, Onix)
+# Can be empty for now (least privilege later)
+############################################
+
+resource "aws_iam_role" "ecs_task_role" {
+  name = "${var.name_prefix}-ecs-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
 ############################################
 # LAUNCH TEMPLATE FOR KAFKA EC2 HOST
 ############################################
 
 resource "aws_launch_template" "ecs_kafka_lt" {
   name_prefix   = "${var.name_prefix}-ecs-kafka-"
-  image_id      = var.ami_id
+  image_id = data.aws_ssm_parameter.ecs_ami.value
   instance_type = var.instance_type
   key_name      = var.key_name
 
@@ -135,10 +196,21 @@ resource "aws_launch_template" "ecs_kafka_lt" {
 
   user_data = base64encode(<<EOF
 #!/bin/bash
-echo "ECS_CLUSTER=${var.cluster_name}" >> /etc/ecs/ecs.config
-systemctl restart ecs
+set -e
+
+# Set ECS cluster name
+echo "ECS_CLUSTER=${var.cluster_name}" > /etc/ecs/ecs.config
+
+# Make sure Docker starts first
+systemctl enable docker
+systemctl start docker
+
+# Enable and start ECS agent
+systemctl enable ecs
+systemctl start ecs
 EOF
 )
+
 
   tags = {
     Name = "${var.name_prefix}-ecs-kafka-lt"

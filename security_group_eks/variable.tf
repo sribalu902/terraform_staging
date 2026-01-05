@@ -14,3 +14,7 @@ variable "tags" {
   type = map(string)
   default = {}
 }
+
+variable "bastion_sg_ids" {
+  type = list(string)
+}

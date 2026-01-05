@@ -8,13 +8,13 @@ create_vpc = 1
 
 # Friendly names for each VPC (index-based)
 vpc_names = [
-  "cds",
+  "UAT",
   # "bap"
 ]
 
 # EKS cluster names (one per VPC)
 cluster_names = [
-  "cds",
+  "UAT-ECS",
   # "bap"
 ]
 
@@ -81,8 +81,8 @@ skip_final_snapshot = true
 ############################################
 
 ssh_cidr        = "183.82.7.231/32"      # your laptop IP
-bastion_ami_id  = "ami-02b8269d5e85954ef"   # Amazon Linux 2
-bastion_key_name = "stage"
+bastion_ami_id  = "ami-087d1c9a513324697"   
+bastion_key_name = "demo-key"
 
 
 ############################################
@@ -92,13 +92,44 @@ bastion_key_name = "stage"
 cluster_name = "dev-ecs"
 name_prefix  = "dev"
 
-kafka_ami_id        = "ami-02b8269d5e85954ef"    # Ubuntu 22.04 or ECS Optimized
-kafka_instance_type = "t3.micro"
-kafka_key_name      = "stage"
+# kafka_ami_id        = "ami-085c0dc6d1e93db96"    # Amazon Linux 2 ECS Optimized
+kafka_instance_type = "t2.large"
+kafka_key_name      = "demo-key"
 
-kafka_asg_desired = 1
+kafka_asg_desired = 2
 kafka_asg_min     = 1
-kafka_asg_max     = 1
+kafka_asg_max     = 4
+
+
+# ############################################
+# # REDIS SERVICE CONFIG
+# ############################################
+# redis_cpu          = 256
+# redis_memory       = 512
+# redis_port         = 6379
+
+# ############################################
+# # KAFKA SERVICE CONFIG
+# ############################################
+# kafka_cpu            = 512
+# kafka_memory         = 1024
+
+# ############################################
+# # kafka -UI 
+# ############################################
+# kafka_ui_cpu    = 256
+# kafka_ui_memory = 512
+# kafka_ui_port   = 8080
+
+
+# ############################################
+# # ONIX ADAPTER CONFIG
+# ############################################
+
+# onix_cpu    = 512
+# onix_memory = 1024
+# onix_port   = 8002
+
 
 
 

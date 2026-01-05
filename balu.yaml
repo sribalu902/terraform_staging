@@ -1,0 +1,122 @@
+services:
+
+  redis-bpp:
+    image: redis:7-alpine
+    container_name: redis-bpp
+    ports:
+      - "6379"
+    networks:
+      - onix-bpp-kafka
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-bpp
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: bpp
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka.internal:9092
+    networks:
+      - onix-bpp-kafka
+    restart: unless-stopped
+
+  onix-bpp-kafka-plugin:
+#    image: manendrapalsingh/onix-adapter:latest
+    image: 488514412303.dkr.ecr.ap-south-1.amazonaws.com/onix:latest
+    pull_policy: always
+    container_name: onix-bpp-plugin-kafka
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./config/onix-bpp:/app/config/message-baised/kafka/onix-bpp
+      - ./schema:/app/schemas:ro
+    environment:
+      CONFIG_FILE: /app/config/message-baised/kafka/onix-bpp/adapter.yaml
+    depends_on:
+      redis-bpp:
+        condition: service_healthy
+    networks:
+      - onix-bpp-kafka
+    restart: unless-stopped
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-south-1
+        awslogs-group: /ec2/docker/onix
+        awslogs-stream: onix-bpp-plugin-${HOSTNAME}
+
+
+  cds-app:
+    ## Build the image first cmd: docker compose -f compose-dev.yml build
+#    image: cds-app:v0
+    image: 488514412303.dkr.ecr.ap-south-1.amazonaws.com/cds:v0.8.0
+    pull_policy: always
+    container_name: cds
+    environment:
+      JAVA_OPTS: >-
+        -XX:+ExitOnOutOfMemoryError
+        -XX:+HeapDumpOnOutOfMemoryError
+        -XX:HeapDumpPath=/var/dump
+        -XX:+UseStringDeduplication
+        --enable-native-access=ALL-UNNAMED
+      APP_ARGS: >-
+        --spring.threads.virtual.enabled=true
+        --spring.profiles.active=kafka,postgres,redis,dev
+
+        --spring.kafka.consumer.bootstrap-servers=kafka.internal:9092
+        --spring.kafka.producer.bootstrap-servers=kafka.internal:9092
+        --kafka.catalogue.on-publish-event.topic=bpp.on_catalog_publish
+        --kafka.catalogue.publish-event.topics=bpp.catalog_publish
+        --kafka.catalogue.publish-event.groupId=bpp.catalog_publish_group
+        --kafka.catalogue.discover-event.topics=bpp.discover
+        --kafka.catalogue.discover-event.groupId=bpp.discover_group
+        --kafka.catalogue.discover-publish-event.topic=bpp.discover_publish
+        --kafka.catalogue.on-discover-event.topic=bpp.on_discover
+        --kafka.catalogue.on-discover-event.topics=bpp.on_discover_publish
+        --kafka.catalogue.on-discover-event.groupId=bpp.on_discover_publish_group
+
+        --spring.datasource.url=jdbc:postgresql://uat-postgress-db.cdgq6yy2sxsm.ap-south-1.rds.amazonaws.com:5432/postgres
+        --spring.datasource.username=postgres
+        --spring.datasource.password=Cdspostgres#321
+
+        --spring.data.redis.url=redis://redis-bpp:6379
+        --spring.data.redis.password=
+    ports:
+      - "8080:8080"
+    networks:
+      - onix-bpp-kafka
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z localhost 8080 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      redis-bpp:
+        condition: service_healthy
+    deploy:
+      mode: replicated
+      replicas: 1
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-south-1
+        awslogs-group: /ec2/docker/onix
+        awslogs-stream: cds-${HOSTNAME}
+  #    volumes:
+  #      # Mount host directory to container to store heap dumps
+  #      - /<path-to>/dumps:/var/dump
+volumes:
+  redis_data:
+    driver: local
+networks:
+  onix-bpp-kafka:
+    driver: bridge

@@ -6,7 +6,6 @@ output "bastion_private_ips" {
   value = aws_instance.bastion[*].private_ip
 }
 
-output "sg_ids" {
+output "bastion_sg_ids" {
   value = aws_security_group.bastion_sg[*].id
 }
-

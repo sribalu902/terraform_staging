@@ -100,34 +100,8 @@ resource "aws_security_group_rule" "worker_to_cluster_api" {
 
 }
 
-# 5) (Optional / defensive) Allow workers -> control plane ephemeral ports (if required)
-# Some control-plane interactions may expect ephemeral ranges; not always required,
-# but harmless to include for managed node join flows.
-resource "aws_security_group_rule" "worker_to_cluster_ephemeral" {
-  count = var.create_vpc
 
-  type                     = "ingress"
-  from_port                = 1025
-  to_port                  = 65535
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.eks_cluster_sg[count.index].id
-  source_security_group_id = aws_security_group.eks_worker_sg[count.index].id
-  description = "Worker to control plane ephemeral ports"
 
-}
-# 6) Allow control-plane SG -> worker on 443 (control plane initiating to node for some flows)
-resource"aws_security_group_rule" "cluster_to_worker_api" {
-  count = var.create_vpc
-
-  type                     = "ingress"
-  from_port                = 443
-  to_port                  = 443
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.eks_worker_sg[count.index].id
-  source_security_group_id = aws_security_group.eks_cluster_sg[count.index].id
-  description = "Control plane to worker port 443"
-
-}
 
 # 7) Allow control plane -> worker kubelet port 10250 (some control-plane ops)
 resource "aws_security_group_rule" "cluster_to_worker_kubelet" {
@@ -142,3 +116,31 @@ resource "aws_security_group_rule" "cluster_to_worker_kubelet" {
  description = "Control plane to worker kubelet port 10250"
 
 }
+resource "aws_security_group_rule" "cluster_to_worker_ephemeral" {
+  count = var.create_vpc
+
+  type                     = "ingress"
+  from_port                = 1025
+  to_port                  = 65535
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_worker_sg[count.index].id
+  source_security_group_id = aws_security_group.eks_cluster_sg[count.index].id
+  description              = "Control plane to worker ephemeral ports"
+}
+
+############################################
+# Bastion -> EKS API access
+############################################
+resource "aws_security_group_rule" "bastion_to_cluster_api" {
+  count = var.create_vpc
+
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster_sg[count.index].id
+  source_security_group_id = var.bastion_sg_ids[count.index]
+
+  description = "Allow Bastion to access EKS API server"
+}
+

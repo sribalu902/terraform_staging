@@ -1,8 +1,8 @@
 #######################################################
-# EKS ROOT MODULE
+# EKS ROOT MODULE (NO LAUNCH TEMPLATE)
 #######################################################
 
-############### 1. IAM ROLE FOR EKS CLUSTER ###############
+############### 1. IAM ROLE FOR CLUSTER ###############
 resource "aws_iam_role" "eks_cluster_role" {
   name = "${var.cluster_name}-cluster-role"
 
@@ -26,6 +26,7 @@ resource "aws_iam_role_policy_attachment" "cluster_AmazonEKSServicePolicy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
 }
 
+
 ############### 2. CREATE EKS CLUSTER ###############
 resource "aws_eks_cluster" "cluster" {
   name     = var.cluster_name
@@ -36,32 +37,16 @@ resource "aws_eks_cluster" "cluster" {
     subnet_ids              = var.subnet_ids
     endpoint_private_access = true
     endpoint_public_access  = false
-    security_group_ids      = var.cluster_security_group_ids
+
+    # cluster SG must be passed from root module
+    security_group_ids = var.cluster_security_group_ids
   }
 
-  # 🔥 REQUIRED – fixes node group join
-  access_config {
-    authentication_mode                         = "CONFIG_MAP"
-    bootstrap_cluster_creator_admin_permissions = true
-  }
-
-  tags = merge(var.tags, {
-    Name = var.cluster_name
-  })
+  tags = merge(var.tags, { Name = var.cluster_name })
 }
 
-############### 3. OIDC PROVIDER (MANDATORY) ###############
-data "tls_certificate" "eks" {
-  url = aws_eks_cluster.cluster.identity[0].oidc[0].issuer
-}
 
-resource "aws_iam_openid_connect_provider" "eks" {
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
-  url             = aws_eks_cluster.cluster.identity[0].oidc[0].issuer
-}
-
-############### 4. NODE IAM ROLE ###############
+############### 3. NODE IAM ROLE ###############
 resource "aws_iam_role" "eks_node_role" {
   name = "${var.cluster_name}-node-role"
 
@@ -95,27 +80,8 @@ resource "aws_iam_role_policy_attachment" "node_SSM" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# 🔥 REQUIRED for PVC / CSI
-resource "aws_iam_role_policy_attachment" "node_EBS_CSI" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
 
-
-############### 8. EKS ADDONS ###############
-resource "aws_eks_addon" "addons" {
-  for_each = { for addon in var.addons : addon.name => addon }
-
-  cluster_name  = aws_eks_cluster.cluster.name
-  addon_name    = each.value.name
-  addon_version = each.value.version
-
-  depends_on = [
-    aws_eks_node_group.node_groups
-  ]
-}
-
-############### 5. MANAGED NODE GROUPS ###############
+############### 4. MANAGED NODE GROUPS ###############
 locals {
   node_group_map = { for ng in var.node_groups : ng.name => ng }
 }
@@ -145,6 +111,9 @@ resource "aws_eks_node_group" "node_groups" {
 
   labels = lookup(each.value, "labels", {})
 
+  ###############################################
+  # Remote access allowed (ONLY when no LT used)
+  ###############################################
   dynamic "remote_access" {
     for_each = var.node_ssh_key_name != "" ? [1] : []
     content {
@@ -156,52 +125,4 @@ resource "aws_eks_node_group" "node_groups" {
   tags = merge(var.node_group_tags, {
     Name = "${var.cluster_name}-${each.key}"
   })
-
-  # 🔥 REQUIRED cluster ownership tag
-  tags_all = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
-  }
-}
-
-############### 6. IRSA (OIDC IAM ROLE FOR PODS) ###############
-data "aws_iam_policy_document" "eks_oidc_assume_role_policy" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.eks.arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:default:aws-test"]
-    }
-  }
-}
-
-resource "aws_iam_role" "eks_oidc" {
-  name               = "eks-oidc"
-  assume_role_policy = data.aws_iam_policy_document.eks_oidc_assume_role_policy.json
-}
-
-############### 7. (EXAMPLE) POLICY FOR POD ROLE ###############
-resource "aws_iam_policy" "eks_oidc_policy" {
-  name = "eks-oidc-policy"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:*"]
-      Resource = "*"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "eks_oidc_attach" {
-  role       = aws_iam_role.eks_oidc.name
-  policy_arn = aws_iam_policy.eks_oidc_policy.arn
 }

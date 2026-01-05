@@ -32,10 +32,10 @@ variable "bastion_sg_ids" {
 # EC2 HOST VARIABLES
 #####################################
 
-variable "ami_id" {
-  description = "AMI for Kafka EC2 host"
-  type        = string
-}
+# variable "ami_id" {
+#   description = "AMI for Kafka EC2 host"
+#   type        = string
+# }
 
 variable "instance_type" {
   type    = string

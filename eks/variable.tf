@@ -1,8 +1,8 @@
-variable "cluster_name" {
-  type = string
-}
+# variable "vpc_id"{
+#   type = string
+# }
 
-variable "vpc_id" {
+variable "cluster_name" {
   type = string
 }
 
@@ -54,4 +54,12 @@ variable "node_group_tags" {
 variable "default_ami_type" {
   type    = string
   default = "AL2_x86_64"
+}
+
+variable "addons" {
+  type = list(object({
+    name    = string
+    version = string
+  }))
+  default = []
 }

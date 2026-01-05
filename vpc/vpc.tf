@@ -97,50 +97,7 @@ resource "aws_route_table_association" "public_assoc" {
     floor(count.index / var.public_subnets_per_vpc)
   ].id
 }
-# # Create NAT Gateway for each VPC
-# resource "aws_eip" "nat_eip" {
-#   count  = var.create_vpc
-#   domain = "vpc"
-# }
 
-# # Create NAT Gateway in each VPC
-# resource "aws_nat_gateway" "nat" {
-#   count = var.create_vpc
-
-#   allocation_id = aws_eip.nat_eip[count.index].id
-#   subnet_id     = aws_subnet.public[count.index * var.public_subnets_per_vpc].id
-
-#   tags = {
-#     Name = "nat-gw-${count.index}"
-#   }
-# }
-
-# Create private route tables and associate with NAT gateway
-# resource "aws_route_table" "private_rt" {
-#   count = var.create_vpc
-
-#   vpc_id = aws_vpc.multi_vpc[count.index].id
-
-#   route {
-#     cidr_block     = "0.0.0.0/0"
-#     nat_gateway_id = aws_nat_gateway.nat[count.index].id
-#   }
-
-#   tags = {
-#     Name = "private-rt-${count.index}"
-#   }
-# }
-
-# # Associate private subnets with the private route table
-
-# resource "aws_route_table_association" "private_assoc" {
-#   count = length(var.private_subnet_cidrs)
-
-#   subnet_id      = aws_subnet.private[count.index].id
-#   route_table_id = aws_route_table.private_rt[
-#     floor(count.index / var.private_subnets_per_vpc)
-#   ].id
-# }
 
 # ============== NAT GATEWAY PER AVAILABILITY ZONE ==============
 locals {
@@ -258,7 +215,8 @@ resource "aws_network_acl_rule" "public_allow_all_outbound" {
 }
 
 # Create Network ACL rules for private NACL inbound
-resource "aws_network_acl_rule" "private_allow_vpc_inbound" {
+# Allow all inbound return traffic (required for NAT)
+resource "aws_network_acl_rule" "private_allow_all_inbound" {
   count          = var.create_vpc
   network_acl_id = aws_network_acl.private_nacl[count.index].id
 
@@ -266,8 +224,10 @@ resource "aws_network_acl_rule" "private_allow_vpc_inbound" {
   egress      = false
   protocol    = "-1"
   rule_action = "allow"
-  cidr_block  = var.vpc_cidrs[count.index]
+  cidr_block  = "0.0.0.0/0"
+  # cidr_block  = var.vpc_cidrs[count.index]
 }
+
 
 # Create Network ACL rules for private NACL outbound
 resource "aws_network_acl_rule" "private_allow_all_outbound" {

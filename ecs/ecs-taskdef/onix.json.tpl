@@ -30,7 +30,7 @@
   "containerDefinitions": [
     {
       "name": "onix",
-      "image": "${ONIX_IMAGE}",
+      "image": "488514412303.dkr.ecr.ap-south-1.amazonaws.com/onix:latest",
       "essential": true,
 
       "portMappings": [
@@ -40,7 +40,7 @@
       "environment": [
         {
           "name": "CONFIG_FILE",
-          "value": "${ONIX_CONFIG_FILE}"
+          "value": "/app/config/message-baised/kafka/onix-bpp/adapter.yaml"
         }
       ],
 

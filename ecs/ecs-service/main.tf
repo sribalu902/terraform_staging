@@ -12,7 +12,7 @@ locals {
       {
         CPU        = var.cpu
         MEMORY     = var.memory
-        AWS_REGION = data.aws_region.current.name
+        AWS_REGION = data.aws_region.current.id
       }
     )
   )

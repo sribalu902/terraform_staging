@@ -5,8 +5,8 @@ provider "aws" {
 
 terraform {
   backend "s3" {
-    bucket = "nsbl-terraform-state"
-    key    = "env/dev/terraform.tfstate"
+    bucket = "terraform-nbsl-state"
+    key    = "env/dec/terraform.tfstate"
     region = "ap-south-1"
   }
 }

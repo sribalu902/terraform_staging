@@ -64,6 +64,13 @@ variable "node_ssh_key_name" {
   default = ""
 }
 
+variable "addons" {
+  type = list(object({
+    name    = string
+    version = string
+  }))
+  default = []
+}
 ##############################
 # DYNAMIC NODE GROUPS
 ##############################
@@ -89,18 +96,7 @@ variable "node_groups" {
 }
 
 
-##########################
-# ADMIN USER ARNS FOR EKS CLUSTER
-##########################
-variable "admin_user_arns" {
-  type    = list(string)
-  default = []
-}
 
-variable "admin_role_arn" {
-  type    = string
-  default = ""
-}
 ##############################
 # TAGS (COMMON TAGGING)
 ##############################
@@ -138,33 +134,33 @@ variable "bastion_key_name" {
   description = "Key pair name used to SSH bastion"
 }
 
-##########################################
-#ec2 instance variables
-##########################################
-variable "ami_ids" {
-  type = list(string)
-}
+# ##########################################
+# #ec2 instance variables
+# ##########################################
+# variable "ami_ids" {
+#   type = list(string)
+# }
 
-variable "instance_types" {
-  type = list(string)
-}
-
-
-variable "key_name_ec2" {
-  description = "value"
-  type = string
-}
-
-variable "ec2_instance_names" {
-  description = "value"
-  type = list(string)
-}
+# variable "instance_types" {
+#   type = list(string)
+# }
 
 
-variable "ec2_vpc_index_list" {
-  description = "List of VPC indices where EC2 instances should be created"
-  type        = list(number)
-}
+# variable "key_name_ec2" {
+#   description = "value"
+#   type = string
+# }
+
+# variable "ec2_instance_names" {
+#   description = "value"
+#   type = list(string)
+# }
+
+
+# variable "ec2_vpc_index_list" {
+#   description = "List of VPC indices where EC2 instances should be created"
+#   type        = list(number)
+# }
 
 
 
